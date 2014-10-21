@@ -1,8 +1,10 @@
 from openmoc import *
 import openmoc.log as log
 import openmoc.plotter as plotter
+import openmoc.process as process
 import openmoc.materialize as materialize
 from openmoc.options import Options
+import openmoc.process as process
 
 ###############################################################################
 #######################   Main Simulation Parameters   ########################
@@ -318,7 +320,8 @@ lattices[-1].setLatticeCells([[10, 11, 15],
 log.py_printf('NORMAL', 'Creating Cmfd mesh...')
 
 cmfd = Cmfd()
-cmfd.setMOCRelaxationFactor(0.66)
+cmfd.setMOCRelaxationFactor(0.6)
+cmfd.setSORRelaxationFactor(1.5)
 cmfd.setLatticeStructure(51,51)
 cmfd.setGroupStructure([1,4,8])
 

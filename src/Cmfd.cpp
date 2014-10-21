@@ -25,7 +25,7 @@ Cmfd::Cmfd() {
   _cell_width = 0.;
   _cell_height = 0.;
   _flux_update_on = true;
-  _optically_thick = true;
+  _optically_thick = false;
   _SOR_factor = 1.0;
   _num_FSRs = 0;
   _relax_factor = 0.6;
@@ -182,6 +182,7 @@ void Cmfd::computeXS(){
   /* Initialize tallies for each parameter */
   FP_PRECISION abs_tally, nu_fis_tally, dif_tally, rxn_tally;
   FP_PRECISION vol_tally, tot_tally, neut_prod_tally;
+  FP_PRECISION trans_tally_group, rxn_tally_group;
   FP_PRECISION scat_tally[_num_cmfd_groups];
   FP_PRECISION chi_tally[_num_cmfd_groups];
 
@@ -193,7 +194,7 @@ void Cmfd::computeXS(){
   #pragma omp parallel for private(volume, flux, abs, tot, nu_fis, chi, \
     dif_coef, scat, abs_tally, nu_fis_tally, dif_tally, rxn_tally,  \
     vol_tally, tot_tally, scat_tally, fsr_material, cell_material, \
-    neut_prod_tally, chi_tally)
+    neut_prod_tally, chi_tally, trans_tally_group, rxn_tally_group)
   for (int i = 0; i < _num_x * _num_y; i++){
 
     cell_material = _materials[i];
@@ -203,12 +204,12 @@ void Cmfd::computeXS(){
     for (int e = 0; e < _num_cmfd_groups; e++) {
 
       /* Zero tallies for this group */
-      abs_tally = 0;
-      nu_fis_tally = 0;
-      dif_tally = 0;
-      rxn_tally = 0;
-      vol_tally = 0;
-      tot_tally = 0;
+      abs_tally = 0.0;
+      nu_fis_tally = 0.0;
+      dif_tally = 0.0;
+      rxn_tally = 0.0;
+      vol_tally = 0.0;
+      tot_tally = 0.0;
       neut_prod_tally = 0.0;
 
       /* Zero each group-to-group scattering tally */
@@ -217,19 +218,17 @@ void Cmfd::computeXS(){
         chi_tally[g] = 0.0;
       }
 
-      /* Loop over FSRs in cmfd cell */
+      /* Loop over FSRs in cmfd cell to compute chi */
       for (iter = _cell_fsrs.at(i).begin();
-        iter != _cell_fsrs.at(i).end(); ++iter){
+           iter != _cell_fsrs.at(i).end(); ++iter){
 
         fsr_material = _FSR_materials[*iter];
         volume = _FSR_volumes[*iter];
-        scat = fsr_material->getSigmaS();
-        vol_tally += volume;
 
         /* Chi tallies */
         for (int b = 0; b < _num_cmfd_groups; b++){
           chi = 0.0;
-
+              
           /* Compute the chi for group b */
           for (int h = _group_indices[b]; h < _group_indices[b+1]; h++)
             chi += fsr_material->getChi()[h];
@@ -241,23 +240,30 @@ void Cmfd::computeXS(){
                 _FSR_fluxes[(*iter)*_num_moc_groups+h] * volume;
           }
         }
+      }
 
-        /* Loop over MOC energy groups within this CMFD coarse group */
-        for (int h = _group_indices[e]; h < _group_indices[e+1]; h++){
+      /* Loop over MOC energy groups within this CMFD coarse group */
+      for (int h = _group_indices[e]; h < _group_indices[e+1]; h++){
+
+        /* Reset transport xs tally for this MOC group */
+        trans_tally_group = 0.0;
+        rxn_tally_group = 0.0;
+        vol_tally = 0.0;
+
+        /* Loop over FSRs in cmfd cell */
+        for (iter = _cell_fsrs.at(i).begin();
+             iter != _cell_fsrs.at(i).end(); ++iter){
+
+          fsr_material = _FSR_materials[*iter];
+          volume = _FSR_volumes[*iter];
+          scat = fsr_material->getSigmaS();
+          vol_tally += volume;
 
           /* Gets FSR volume, material, and cross sections */
           flux = _FSR_fluxes[(*iter)*_num_moc_groups+h];
           abs = fsr_material->getSigmaA()[h];
           tot = fsr_material->getSigmaT()[h];
-          dif_coef = fsr_material->getDifCoef()[h];
           nu_fis = fsr_material->getNuSigmaF()[h];
-
-          /* If Material has a diffusion coefficient, use it; otherwise
-           * estimate diffusion coefficient with \f$ \frac{1}{3\Sigma_t} \f$ */
-          if (fsr_material->getDifCoef()[h] > 1e-8)
-            dif_tally += fsr_material->getDifCoef()[h] * flux * volume;
-          else
-            dif_tally += flux * volume / (3.0 * tot);
 
           /* Increment tallies for this group */
           abs_tally += abs * flux * volume;
@@ -265,12 +271,18 @@ void Cmfd::computeXS(){
           nu_fis_tally += nu_fis * flux * volume;
           rxn_tally += flux * volume;
 
+          trans_tally_group += tot * flux * volume;
+          rxn_tally_group += flux * volume;
+
           /* Scattering tallies */
           for (int g = 0; g < _num_moc_groups; g++){
               scat_tally[getCmfdGroup(g)] +=
                   scat[g*_num_moc_groups+h] * flux * volume;
           }
         }
+
+        /* Energy collapse diffusion coefficient */
+        dif_tally += rxn_tally_group / (3.0 * (trans_tally_group / rxn_tally_group));
       }
 
       /* Set the Mesh cell properties with the tallies */
@@ -287,8 +299,8 @@ void Cmfd::computeXS(){
       else
         cell_material->setChiByGroup(0.0,e+1);
 
-      log_printf(DEBUG, "cell: %i, group: %i, vol: %f, siga: %f, sigt: %f,"
-                 " nu_sigf: %f, dif_coef: %f, flux: %f, chi: %f", i, e,
+      log_printf(DEBUG, "cell: %i, group: %i, vol: %e, siga: %e, sigt: %e,"
+                 " nu_sigf: %e, dif_coef: %e, flux: %e, chi: %e", i, e,
                  vol_tally, abs_tally / rxn_tally, tot_tally / rxn_tally,
                  nu_fis_tally / rxn_tally, dif_tally / rxn_tally,
                  rxn_tally / vol_tally, chi_tally[e] / (neut_prod_tally+1e-12));
@@ -296,7 +308,7 @@ void Cmfd::computeXS(){
       /* Set scattering xs */
       for (int g = 0; g < _num_cmfd_groups; g++){
         cell_material->setSigmaSByGroup(scat_tally[g] / rxn_tally, e+1, g+1);
-        log_printf(DEBUG, "scattering from %i to %i: %f", e, g,
+        log_printf(DEBUG, "scattering from %i to %i: %e", e, g,
                    scat_tally[g] / rxn_tally);
       }
     }
@@ -311,7 +323,7 @@ void Cmfd::computeXS(){
  *          \f$ \tilde{D} \f$ - surface diffusion coefficient correction factor
  *        for each mesh while ensuring neutron balance is achieved.
  */
-void Cmfd::computeDs(){
+void Cmfd::computeDs(int moc_iteration){
 
   log_printf(INFO, "Computing CMFD diffusion coefficients...");
 
@@ -321,6 +333,11 @@ void Cmfd::computeDs(){
   FP_PRECISION sense;
   int next_surface;
   int cell, cell_next;
+  FP_PRECISION relax_factor = _relax_factor;
+
+  /* If it is the first MOC iteration, set relax_factor to 0 */
+  if (moc_iteration == 0)
+    relax_factor = 0.0;
 
   /* Loop over mesh cells in y direction */
   #pragma omp parallel for private(d, d_next, d_hat, d_tilde, current, flux, \
@@ -345,7 +362,7 @@ void Cmfd::computeDs(){
           cell_next = getCellNext(cell, surface);
 
           /* Set halfspace sense of the Surface */
-          if (surface == 0 || surface == 3)
+          if (surface == 0 || surface == 1)
             sense = -1.0;
           else
             sense = 1.0;
@@ -468,7 +485,7 @@ void Cmfd::computeDs(){
           /* Perform underrelaxation on d_tilde */
           d_tilde =
              _materials[cell]->getDifTilde()[surface*_num_cmfd_groups + e] *
-             (1 - _relax_factor) + _relax_factor * d_tilde;
+             (1 - relax_factor) + relax_factor * d_tilde;
 
           /* Set d_hat and d_tilde */
           _materials[cell]->setDifHatByGroup(d_hat, e+1, surface);
@@ -489,7 +506,7 @@ void Cmfd::computeDs(){
 /** @brief CMFD solver that solves the diffusion problem.
  * @return k-effective the solution eigenvalue.
  */
-FP_PRECISION Cmfd::computeKeff(){
+FP_PRECISION Cmfd::computeKeff(int moc_iteration){
 
   log_printf(INFO, "Running diffusion solver...");
 
@@ -526,7 +543,7 @@ FP_PRECISION Cmfd::computeKeff(){
   
   /* Compute the cross sections and surface diffusion coefficients */
   computeXS();
-  computeDs();
+  computeDs(moc_iteration);
 
   /* Construct matrices */
   constructMatrices();
@@ -577,7 +594,7 @@ FP_PRECISION Cmfd::computeKeff(){
                iter, _k_eff, residual);
     
     /* Check for convergence */
-    if (residual < _source_convergence_threshold)
+    if (residual < _source_convergence_threshold && iter > 10)
       break;
   }
 
@@ -607,7 +624,7 @@ void Cmfd::linearSolve(FP_PRECISION** mat, FP_PRECISION* vec_x,
   FP_PRECISION val;
   int iter = 0;
 
-  while (residual > conv){
+  while (iter < max_iter){
 
     /* Pass new flux to old flux */
     vector_copy(vec_x, _flux_temp, _num_x*_num_y*_num_cmfd_groups);
@@ -621,7 +638,7 @@ void Cmfd::linearSolve(FP_PRECISION** mat, FP_PRECISION* vec_x,
 
         for (int g = 0; g < _num_cmfd_groups; g++){
 
-          row = (y*_num_x+x)*_num_cmfd_groups + g;
+          row = cell*_num_cmfd_groups + g;
           val = 0.0;
 
           /* Previous flux term */
@@ -645,7 +662,7 @@ void Cmfd::linearSolve(FP_PRECISION** mat, FP_PRECISION* vec_x,
           /* Group-to-group */
           for (int e = 0; e < _num_cmfd_groups; e++){
             if (e != g)
-              val -= _SOR_factor * vec_x[(y*_num_x+x)*_num_cmfd_groups+e] *
+              val -= _SOR_factor * vec_x[cell*_num_cmfd_groups+e] *
                      mat[cell][g*(_num_cmfd_groups+4)+2+e] /
                      mat[cell][g*(_num_cmfd_groups+4)+g+2];
           }
@@ -676,7 +693,7 @@ void Cmfd::linearSolve(FP_PRECISION** mat, FP_PRECISION* vec_x,
 
         for (int g = 0; g < _num_cmfd_groups; g++){
 
-          row = (y*_num_x+x)*_num_cmfd_groups + g;
+          row = cell*_num_cmfd_groups + g;
           val = 0.0;
 
           /* Previous flux term */
@@ -700,7 +717,7 @@ void Cmfd::linearSolve(FP_PRECISION** mat, FP_PRECISION* vec_x,
           /* Group-to-group */
           for (int e = 0; e < _num_cmfd_groups; e++){
             if (e != g)
-              val -= _SOR_factor * vec_x[(y*_num_x+x)*_num_cmfd_groups+e] *
+              val -= _SOR_factor * vec_x[cell*_num_cmfd_groups+e] *
                      mat[cell][g*(_num_cmfd_groups+4)+2+e] /
                      mat[cell][g*(_num_cmfd_groups+4)+g+2];
           }
@@ -735,7 +752,7 @@ void Cmfd::linearSolve(FP_PRECISION** mat, FP_PRECISION* vec_x,
 
     log_printf(DEBUG, "GS iter: %i, res: %f", iter, residual);
 
-    if (iter >= max_iter)
+    if (residual < conv && iter > 10)
       break;
   }
 
@@ -813,7 +830,7 @@ void Cmfd::constructMatrices(){
         value = (material->getDifHat()[2*_num_cmfd_groups + e]
                 - material->getDifTilde()[2*_num_cmfd_groups + e])
           * _cell_height;
-
+        
         _A[cell][e*(_num_cmfd_groups+4)+e+2] += value;
 
         /* Set transport term on off diagonal */
@@ -821,7 +838,7 @@ void Cmfd::constructMatrices(){
           value = - (material->getDifHat()[2*_num_cmfd_groups + e]
                   + material->getDifTilde()[2*_num_cmfd_groups + e])
                   * _cell_height;
-
+            
           _A[cell][e*(_num_cmfd_groups+4)+_num_cmfd_groups+2] += value;
         }
 
@@ -831,6 +848,7 @@ void Cmfd::constructMatrices(){
         value = (material->getDifHat()[e]
                 + material->getDifTilde()[e])
             * _cell_height;
+        
 
         _A[cell][e*(_num_cmfd_groups+4)+e+2] += value;
 
@@ -839,7 +857,7 @@ void Cmfd::constructMatrices(){
           value = - (material->getDifHat()[e]
                      - material->getDifTilde()[e])
               * _cell_height;
-
+          
           _A[cell][e*(_num_cmfd_groups+4)] += value;
         }
 
@@ -847,17 +865,17 @@ void Cmfd::constructMatrices(){
 
         /* Set transport term on diagonal */
         value = (material->getDifHat()[1*_num_cmfd_groups + e]
-                - material->getDifTilde()[1*_num_cmfd_groups + e])
+                + material->getDifTilde()[1*_num_cmfd_groups + e])
                 * _cell_width;
-
+        
         _A[cell][e*(_num_cmfd_groups+4)+e+2] += value;
 
         /* Set transport term on off diagonal */
         if (y != 0){
           value = - (material->getDifHat()[1*_num_cmfd_groups + e]
-                  + material->getDifTilde()[1*_num_cmfd_groups + e])
+                  - material->getDifTilde()[1*_num_cmfd_groups + e])
               * _cell_width;
-
+          
           _A[cell][e*(_num_cmfd_groups+4)+1] += value;
         }
 
@@ -865,17 +883,17 @@ void Cmfd::constructMatrices(){
 
         /* Set transport term on diagonal */
         value = (material->getDifHat()[3*_num_cmfd_groups + e]
-                + material->getDifTilde()[3*_num_cmfd_groups + e])
+                - material->getDifTilde()[3*_num_cmfd_groups + e])
             * _cell_width;
-
+        
         _A[cell][e*(_num_cmfd_groups+4)+e+2] += value;
 
         /* Set transport term on off diagonal */
         if (y != _num_y - 1){
           value = - (material->getDifHat()[3*_num_cmfd_groups + e]
-                  - material->getDifTilde()[3*_num_cmfd_groups + e])
+                  + material->getDifTilde()[3*_num_cmfd_groups + e])
                   * _cell_width;
-
+          
           _A[cell][e*(_num_cmfd_groups+4)+_num_cmfd_groups+3] += value;
         }
 
@@ -895,7 +913,7 @@ void Cmfd::constructMatrices(){
 
         for (int i = 0; i < _num_cmfd_groups; i++)
           log_printf(DEBUG, "i: %i, M value: %f",
-                     i, _M[cell][e*(_num_cmfd_groups+4)+i]);
+                     i, _M[cell][e*(_num_cmfd_groups)+i]);
       }
     }
   }
@@ -911,21 +929,14 @@ void Cmfd::updateMOCFlux(){
 
   log_printf(INFO, "Updating MOC flux...");
 
-  /* Initialize variables */
-  FP_PRECISION old_cell_flux, new_cell_flux;
-
   /* Loop over mesh cells */
-  #pragma omp parallel for private(old_cell_flux, new_cell_flux)
+  #pragma omp parallel for
   for (int i = 0; i < _num_x*_num_y; i++){
 
     std::vector<int>::iterator iter;
 
     /* Loop over CMFD groups */
     for (int e = 0; e < _num_cmfd_groups; e++){
-
-      /* Get the old and new Mesh cell flux */
-      old_cell_flux = _old_flux[i*_num_cmfd_groups + e];
-      new_cell_flux = _new_flux[i*_num_cmfd_groups + e];
 
       for (int h = _group_indices[e]; h < _group_indices[e+1]; h++){
 
@@ -934,12 +945,12 @@ void Cmfd::updateMOCFlux(){
           iter != _cell_fsrs.at(i).end(); ++iter) {
 
           /* Set new flux in FSR */
-          _FSR_fluxes[*iter*_num_moc_groups+h] =
-            new_cell_flux/old_cell_flux * _FSR_fluxes[*iter*_num_moc_groups+h];
+            _FSR_fluxes[*iter*_num_moc_groups+h] = getFluxRatio(i,h)
+             * _FSR_fluxes[*iter*_num_moc_groups+h];
 
           log_printf(DEBUG, "Updating flux in FSR: %i, cell: %i, group: "
                      "%i, ratio: %f", *iter ,i, h,
-                      new_cell_flux / old_cell_flux);
+                     getFluxRatio(i,h));
         }
       }
     }
@@ -1695,4 +1706,13 @@ void Cmfd::setPolarQuadrature(quadratureType quadrature_type, int num_polar) {
     delete _quad;
 
   _quad = new Quadrature(quadrature_type, num_polar);
+}
+
+FP_PRECISION Cmfd::getFluxRatio(int cmfd_cell, int moc_group){
+
+  int cmfd_group = _group_indices_map[moc_group];
+  FP_PRECISION old_flux = _old_flux[cmfd_cell*_num_cmfd_groups + cmfd_group];
+  FP_PRECISION new_flux = _new_flux[cmfd_cell*_num_cmfd_groups + cmfd_group];
+  FP_PRECISION ratio = new_flux / old_flux;
+  return ratio;
 }

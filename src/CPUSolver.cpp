@@ -637,7 +637,7 @@ FP_PRECISION CPUSolver::computeFSRSources() {
       /* Compute the norm of residual of the source in the FSR */
       if (fabs(_source(r,G)) > 1E-10)
         _source_residuals[r] += pow((_source(r,G) - _old_source(r,G))
-                                / _source(r,G), 2);
+                                    / _source(r,G), 2);
 
       /* Update the old source */
       _old_source(r,G) = _source(r,G);
@@ -647,7 +647,7 @@ FP_PRECISION CPUSolver::computeFSRSources() {
   /* Sum up the residuals from each FSR */
   source_residual = pairwise_sum<FP_PRECISION>(_source_residuals, _num_FSRs);
   source_residual = sqrt(source_residual / (_num_FSRs * _num_groups));
-
+  
   return source_residual;
 }
 
@@ -1073,3 +1073,54 @@ void CPUSolver::computeFSRFissionRates(double* fission_rates, int num_FSRs) {
 
   return;
 }
+
+/*
+void CPUSolver::updateBoundaryFlux(){
+
+  segment* segments;
+  segment* curr_segment;
+  int num_segments;
+  int bc;
+  FP_PRECISION* track_flux;
+  FP_PRECISION ratio;
+  int cmfd_cell;
+  
+  log_printf(INFO, "updating boundary flux");
+  
+  for (int i=0; i < _tot_num_tracks; i++) {
+      
+    num_segments = _tracks[i]->getNumSegments();
+    segments = _tracks[i]->getSegments();
+
+*/
+    /* update boundary flux in forward direction */
+  /*
+    bc = (int)_tracks[i]->getBCOut();
+    curr_segment = &segments[0];
+    track_flux = &_boundary_flux(i,0,0,0);
+    cmfd_cell = _cmfd->convertFSRIdToCmfdCell(curr_segment->_region_id);
+    
+    if (bc){
+      for (int e=0; e < _num_groups; e++) {
+        for (int p=0; p < _num_polar; p++) {
+          track_flux(p,e) = track_flux(p,e) * _cmfd->getFluxRatio(cmfd_cell, e);
+        }
+      }
+    }
+  */
+    /* update boundary flux in backwards direction */
+  /*
+    bc = (int)_tracks[i]->getBCIn();
+    curr_segment = &segments[num_segments-1];
+    track_flux = &_boundary_flux(i,0,0,_polar_times_groups);
+    
+    if (bc){
+      for (int e=0; e < _num_groups; e++) {
+        for (int p=0; p < _num_polar; p++) {
+          track_flux(p,e) = track_flux(p,e) * _cmfd->getFluxRatio(cmfd_cell, e);
+        }
+      }
+    }
+  }
+}
+  */
